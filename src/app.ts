@@ -1,12 +1,11 @@
 import express from "express";
 import cookieParser from "cookie-parser";
 import dotenv from 'dotenv';
-import { PrismaClient } from '@prisma/client'
+import { prisma } from "../src/lib/prisma";
 
 dotenv.config();
 
 const app = express();
-const prisma = new PrismaClient();
 
 // Express middleware that parses incoming JSON request bodies.
 app.use(express.json()); // to parse incoming requests with JSON payloads (req.body)
