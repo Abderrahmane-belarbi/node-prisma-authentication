@@ -1,10 +1,10 @@
 import { Request, Response } from "express";
 import { UserRegisterSchema } from "../validation/register.validation";
-import { toFieldsErrors } from "../lib/utils/auth.utils";
+import { toFieldsErrors } from "../lib/utils/input.utils";
 import { prisma } from "../lib/prisma";
 import bcrypt from "bcryptjs";
 import { UserLoginSchema } from "../validation/login.validation";
-import jwt from 'jsonwebtoken';
+import { createToken } from "../lib/utils/auth.utils";
 export async function registerHandler(req: Request, res: Response) {
   const validation = UserRegisterSchema.safeParse(req.body);
 
@@ -59,47 +59,43 @@ export async function registerHandler(req: Request, res: Response) {
     });
   }
 }
+
 // Used to keep response time similar when the email doesn't exist.
 // Use the same cost factor (12 here) as in your register handler.
 const DUMMY_HASH = bcrypt.hashSync("dummy-password", 12);
-
 export async function loginHandler(req: Request, res: Response) {
   const validation = UserLoginSchema.safeParse(req.body);
   if (!validation.success) {
-    return res.status(400).json({
-      message: "Invalid input"
-    });
+    return res.status(400).json({ message: "Invalid input" });
   }
   const { email, password } = validation.data;
   try {
     const user = await prisma.user.findUnique({
       where: { email }
     });
-    const matched = await bcrypt.compare(password, user?.passwordHash ?? DUMMY_HASH);
-    if (!user || user.passwordHash || !matched) {
-      return res.status(401).json({
-        message: "Invalid email or password"
-      });
+    const passwordMatch = await bcrypt.compare(password, user?.passwordHash ?? DUMMY_HASH);
+    if (!user || !user.passwordHash || !passwordMatch) {
+      return res.status(401).json({ message: "Invalid email or password" });
     }
 
-    const token = jwt.sign({ sub: user.id }, process.env.JWT_SECRET!, {
-      expiresIn: "15m"
-    })
+    if (!user.emailVerified) {
+      return res.status(403).json({ message: "Please verify your email before you login" });
+    }
+    const payload = {
+      sub: user.id,
+      role: user.role,
+      tokenVersion: user.tokenVersion
+    };
 
-    res.cookie("access_token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: 15 * 60 * 1000,
-    });
+    // Generate and set the access token in the response cookie
+    createToken('access', res, payload);
 
     return res.status(200).json({
-      message: "User logged in successfully"
+      message: "Login successful"
     });
 
   } catch (error) {
-    return res.status(500).json({
-      message: `Internal server error`
-    })
+    console.error("Login error:", error);
+    return res.status(500).json({ message: `Internal server error` });
   }
 }
