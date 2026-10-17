@@ -128,3 +128,7 @@ export async function refreshTokenHandler(req: Request, res: Response) {
   }
 }
 //________________________________________________________________________________________
+export async function logoutHandler(_: Request, res: Response) {
+  clearAuthCookies(res);
+  return res.status(200).json({ message: "Logged out successfully" });
+}
