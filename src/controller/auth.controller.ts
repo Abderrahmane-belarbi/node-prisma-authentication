@@ -11,7 +11,6 @@ import jwt from 'jsonwebtoken';
 //________________________________________________________________________________________
 export async function registerHandler(req: Request, res: Response) {
   const validation = UserRegisterSchema.safeParse(req.body);
-
   if (!validation.success) {
     const fieldErrors = toFieldsErrors(validation.error);
     return res.status(400).json({
@@ -19,25 +18,14 @@ export async function registerHandler(req: Request, res: Response) {
       errors: fieldErrors
     });
   }
-
   // Use validated data
   const { name, email, password } = validation.data;
-
   try {
     // 2. Check if the user already exists
-    const existingUser = await prisma.user.findUnique({
-      where: {
-        email
-      }
-    });
-    if (existingUser) {
-      return res.status(409).json({
-        message: "Email already registered",
-      });
-    }
+    const existingUser = await prisma.user.findUnique({ where: { email } });
+    if (existingUser) return res.status(409).json({ message: "Email already registered" });
     // 3. Hash password
     const hashedPassword = await bcrypt.hash(password, 12);
-
     // 4. Create user
     await prisma.user.create({
       data: {
@@ -46,7 +34,6 @@ export async function registerHandler(req: Request, res: Response) {
         passwordHash: hashedPassword
       }
     });
-
     // TODO: Implement email verification logic here 
     // (e.g., send a verification email with a token)
 
@@ -54,13 +41,9 @@ export async function registerHandler(req: Request, res: Response) {
     return res.status(201).json({
       message: "Registration successful",
     });
-
   } catch (error) {
     console.error("Registration error:", error);
-
-    return res.status(500).json({
-      message: "Internal server error",
-    });
+    return res.status(500).json({ message: "Internal server error" });
   }
 }
 //________________________________________________________________________________________
@@ -135,8 +118,13 @@ export async function refreshTokenHandler(req: Request, res: Response) {
     return res.status(200).json({ message: 'Token refreshed' });
 
   } catch (error) {
+    // covers invalid signature and TokenExpiredError (a subclass)
+    if (error instanceof jwt.JsonWebTokenError) {
+      clearAuthCookies(res);
+      return res.status(401).json({ message: "Unauthorized" });
+    }
     console.error("Refresh token error:", error);
-    return res.status(401).json({ message: 'Unauthorized' });
+    return res.status(500).json({ message: 'Internal server error' });
   }
 }
 //________________________________________________________________________________________
