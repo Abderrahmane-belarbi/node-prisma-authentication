@@ -2,6 +2,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import dotenv from 'dotenv';
 import authRouter from "./routes/auth/auth.routes"
+import { prisma } from "./lib/prisma";
 dotenv.config();
 
 const app = express();
@@ -15,5 +16,10 @@ app.use(cookieParser());
 
 // auth routes
 app.use('/auth', authRouter);
+
+app.get('/users', async (req, res) => {
+  const users = await prisma.user.findMany();
+  res.json(users);
+});
 
 export default app;
