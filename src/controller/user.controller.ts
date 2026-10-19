@@ -8,7 +8,7 @@ export async function getUserProfile(req: Request, res: Response) {
     const user = await prisma.user.findUnique({ where: { email } });
     return res.status(200).json({ message: "User profile", data: user });
   } catch (error) {
-    console.log(error);
-    return res.status(500).json({ message: "err" })
+    console.error("getUserProfile error:", error);
+    return res.status(500).json({ message: "Internal server error" });
   }
 }
