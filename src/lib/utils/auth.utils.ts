@@ -1,4 +1,4 @@
-import { Response } from "express";
+import { NextFunction, Request, Response } from "express";
 import jwt from 'jsonwebtoken';
 import { Role } from "../../../generated/prisma/enums";
 
@@ -7,6 +7,8 @@ type Payload = {
   role: Role;
   tokenVersion: number
 }
+
+type TokenType = 'access' | 'refresh';
 
 const TOKEN_CONFIG = {
   access: {
@@ -32,7 +34,7 @@ const cookieBase = {
 }; 
 
 export function createToken(
-  tokenType: 'access' | 'refresh',
+  tokenType: TokenType,
   res: Response,
   payload: Payload
 ) {
@@ -53,4 +55,22 @@ export function clearAuthCookies(res: Response) {
   // path must match the one used when the cookie was set
   res.clearCookie(TOKEN_CONFIG.access.cookieName, { ...cookieBase, path: TOKEN_CONFIG.access.path });
   res.clearCookie(TOKEN_CONFIG.refresh.cookieName, { ...cookieBase, path: TOKEN_CONFIG.refresh.path });
+}
+
+export function verifyToken(tokenType: TokenType, token: string) {
+  const secret = TOKEN_CONFIG[tokenType].secret
+  return jwt.verify(token, secret, {
+      algorithms: ["HS256"]
+    }) as { sub: string, role: Role, tokenVersion: number };
+}
+
+export function extractAccessToken(req: Request): string | null {
+  // Check the Authorization header first
+  const header = req.headers.authorization;
+  if(header) {
+    const [scheme, token] = header.split(' ');
+    return scheme.toLowerCase() === 'bearer' && token ? token : null
+  }
+  // Fallback to cookie if header is not present
+  return req.cookies?.access_token ?? null; // web fallback
 }

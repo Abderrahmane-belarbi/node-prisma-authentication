@@ -4,7 +4,7 @@ import { toFieldsErrors } from "../lib/utils/input.utils";
 import { prisma } from "../lib/prisma";
 import bcrypt from "bcryptjs";
 import { UserLoginSchema } from "../validation/login.validation";
-import { clearAuthCookies, createToken } from "../lib/utils/auth.utils";
+import { clearAuthCookies, createToken, verifyToken } from "../lib/utils/auth.utils";
 import { Role } from "../../generated/prisma/enums";
 import jwt from 'jsonwebtoken';
 
@@ -95,9 +95,7 @@ export async function refreshTokenHandler(req: Request, res: Response) {
   const token = req.cookies?.refresh_token;
   if (!token) return res.status(401).json({ message: 'Unauthorized' });
   try {
-    const decodedPayload = jwt.verify(token, process.env.JWT_REFRESH_SECRET!, {
-      algorithms: ["HS256"]
-    }) as { sub: string, role: Role, tokenVersion: number };
+    const decodedPayload = verifyToken('refresh', token);
     const user = await prisma.user.findUnique({ where: { id: decodedPayload.sub } });
 
     if (!user || user.tokenVersion !== decodedPayload.tokenVersion) {
