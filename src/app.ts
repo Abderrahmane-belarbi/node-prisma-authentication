@@ -3,7 +3,7 @@ import cookieParser from "cookie-parser";
 import dotenv from 'dotenv';
 import authRouter from "./routes/auth.routes"
 import userRouter from "./routes/user.routes"
-import { prisma } from "./lib/prisma";
+
 dotenv.config();
 
 const app = express();
