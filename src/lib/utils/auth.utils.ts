@@ -1,5 +1,6 @@
-import { NextFunction, Request, Response } from "express";
+import { Request, Response } from "express";
 import jwt from 'jsonwebtoken';
+import { createHash } from "node:crypto";
 import { Role } from "../../../generated/prisma/enums";
 
 type Payload = {
@@ -14,7 +15,7 @@ const TOKEN_CONFIG = {
   access: {
     secret: process.env.JWT_ACCESS_SECRET!,
     cookieName: 'access_token',
-    duration: 15 * 60,
+    duration: 15 * 60, // 15x60 seconds (15 minutes)
     // The path attribute tells the browser on which URLs to send this cookie. A cookie is sent only if the request URL starts with its path.
     path: "/" // Every route (/users, /orders, /auth/...), because any protected route needs it
 
@@ -22,7 +23,7 @@ const TOKEN_CONFIG = {
   refresh: {
     secret: process.env.JWT_REFRESH_SECRET!,
     cookieName: 'refresh_token',
-    duration: 30 * 24 * 60 * 60,
+    duration: 30 * 24 * 60 * 60, // 30x24x60x60 seconds (30 days)
     path: "/auth" // Only /auth/... routes (refresh, logout)
   }
 }
@@ -38,17 +39,33 @@ export function createToken(
   res: Response,
   payload: Payload
 ) {
+  const token = signToken(tokenType, payload);
+  return setTokenCookie(tokenType, res, token);
+}
+
+export function signToken(tokenType: TokenType, payload: Payload) {
   const config = TOKEN_CONFIG[tokenType];
-  const token = jwt.sign(payload, config.secret, {
+  return jwt.sign(payload, config.secret, {
     algorithm: "HS256",
     expiresIn: config.duration
   });
+}
 
+export function setTokenCookie(tokenType: TokenType, res: Response, token: string) {
+  const config = TOKEN_CONFIG[tokenType];
   return res.cookie(config.cookieName, token, {
     ...cookieBase,
     maxAge: config.duration * 1000,
     path: config.path 
   });
+}
+
+export function getRefreshTokenExpiry() {
+  return new Date(Date.now() + TOKEN_CONFIG.refresh.duration * 1000);
+}
+
+export function hashRefreshToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
 }
 
 export function clearAuthCookies(res: Response) {

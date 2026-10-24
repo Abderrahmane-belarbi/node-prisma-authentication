@@ -4,9 +4,17 @@ import { toFieldsErrors } from "../lib/utils/input.utils";
 import { prisma } from "../lib/prisma";
 import bcrypt from "bcryptjs";
 import { UserLoginSchema } from "../validation/login.validation";
-import { clearAuthCookies, createToken, verifyToken } from "../lib/utils/auth.utils";
+import {
+  clearAuthCookies,
+  createToken,
+  getRefreshTokenExpiry,
+  hashRefreshToken,
+  setTokenCookie,
+  signToken,
+  verifyToken,
+} from "../lib/utils/auth.utils";
 import { Role } from "../../generated/prisma/enums";
-import jwt from 'jsonwebtoken';
+import jwt from "jsonwebtoken";
 
 //________________________________________________________________________________________
 export async function registerHandler(req: Request, res: Response) {
@@ -15,7 +23,7 @@ export async function registerHandler(req: Request, res: Response) {
     const fieldErrors = toFieldsErrors(validation.error);
     return res.status(400).json({
       message: "Invalid inputs",
-      errors: fieldErrors
+      errors: fieldErrors,
     });
   }
   // Use validated data
@@ -23,7 +31,8 @@ export async function registerHandler(req: Request, res: Response) {
   try {
     // 2. Check if the user already exists
     const existingUser = await prisma.user.findUnique({ where: { email } });
-    if (existingUser) return res.status(409).json({ message: "Email already registered" });
+    if (existingUser)
+      return res.status(409).json({ message: "Email already registered" });
     // 3. Hash password
     const hashedPassword = await bcrypt.hash(password, 12);
     // 4. Create user
@@ -31,10 +40,10 @@ export async function registerHandler(req: Request, res: Response) {
       data: {
         name,
         email,
-        passwordHash: hashedPassword
-      }
+        passwordHash: hashedPassword,
+      },
     });
-    // TODO: Implement email verification logic here 
+    // TODO: Implement email verification logic here
     // (e.g., send a verification email with a token)
 
     // 5. Return response
@@ -59,31 +68,46 @@ export async function loginHandler(req: Request, res: Response) {
   const { email, password } = validation.data;
   try {
     const user = await prisma.user.findUnique({
-      where: { email }
+      where: { email },
     });
-    const passwordMatch = await bcrypt.compare(password, user?.passwordHash ?? DUMMY_HASH);
+    const passwordMatch = await bcrypt.compare(
+      password,
+      user?.passwordHash ?? DUMMY_HASH,
+    );
     if (!user || !user.passwordHash || !passwordMatch) {
       return res.status(401).json({ message: "Invalid email or password" });
     }
 
-    if (!user.emailVerified && process.env.REQUIRE_EMAIL_VERIFICATION === "true") {
-      return res.status(403).json({ message: "Please verify your email before you login" });
+    if (
+      !user.emailVerified &&
+      process.env.REQUIRE_EMAIL_VERIFICATION === "true"
+    ) {
+      return res
+        .status(403)
+        .json({ message: "Please verify your email before you login" });
     }
 
     const payload = {
       sub: user.id,
       role: user.role,
-      tokenVersion: user.tokenVersion
+      tokenVersion: user.tokenVersion,
     };
 
-    // Generate and set the access/refresh token in the response cookie
-    createToken('access', res, payload);
-    createToken('refresh', res, payload);
+    // Keep access tokens short lived; persist only a hash of the refresh token.
+    createToken("access", res, payload);
+    const refreshToken = signToken("refresh", payload);
+    await prisma.refreshToken.create({
+      data: {
+        tokenHash: hashRefreshToken(refreshToken),
+        userId: user.id,
+        expiresAt: getRefreshTokenExpiry(),
+      },
+    });
+    setTokenCookie("refresh", res, refreshToken);
 
     return res.status(200).json({
-      message: "Login successful"
+      message: "Login successful",
     });
-
   } catch (error) {
     console.error("Login error:", error);
     return res.status(500).json({ message: `Internal server error` });
@@ -93,12 +117,25 @@ export async function loginHandler(req: Request, res: Response) {
 //________________________________________________________________________________________
 export async function refreshTokenHandler(req: Request, res: Response) {
   const token = req.cookies?.refresh_token;
-  if (!token) return res.status(401).json({ message: 'Unauthorized' });
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
   try {
-    const decodedPayload = verifyToken('refresh', token);
-    const user = await prisma.user.findUnique({ where: { id: decodedPayload.sub } });
+    const decodedPayload = verifyToken("refresh", token);
+    const tokenHash = hashRefreshToken(token);
+    const storedToken = await prisma.refreshToken.findUnique({
+      where: { tokenHash },
+    });
+    const user = await prisma.user.findUnique({
+      where: { id: decodedPayload.sub },
+    });
 
-    if (!user || user.tokenVersion !== decodedPayload.tokenVersion) {
+    if (
+      !storedToken ||
+      storedToken.userId !== decodedPayload.sub ||
+      storedToken.revokedAt ||
+      storedToken.expiresAt <= new Date() ||
+      !user ||
+      user.tokenVersion !== decodedPayload.tokenVersion
+    ) {
       clearAuthCookies(res);
       return res.status(401).json({ message: "Unauthorized" });
     }
@@ -106,15 +143,36 @@ export async function refreshTokenHandler(req: Request, res: Response) {
     const newPayload = {
       sub: user.id,
       role: user.role,
-      tokenVersion: user.tokenVersion
+      tokenVersion: user.tokenVersion,
     };
-    // create new access token
-    createToken('access', res, newPayload);
-    // create new refresh token
-    createToken('refresh', res, newPayload);
+    const newRefreshToken = signToken("refresh", newPayload);
+    const now = new Date();
+    // Revoke the presented token and create its replacement atomically. Only
+    // one concurrent refresh can rotate a given token successfully.
+    const rotated = await prisma.$transaction(async (tx) => {
+      const revoked = await tx.refreshToken.updateMany({
+        where: { id: storedToken.id, revokedAt: null, expiresAt: { gt: now } },
+        data: { revokedAt: now },
+      });
+      if (revoked.count !== 1) return false;
+      await tx.refreshToken.create({
+        data: {
+          tokenHash: hashRefreshToken(newRefreshToken),
+          userId: user.id,
+          expiresAt: getRefreshTokenExpiry(),
+        },
+      });
+      return true;
+    });
+    if (!rotated) {
+      clearAuthCookies(res);
+      return res.status(401).json({ message: "Unauthorized" });
+    }
 
-    return res.status(200).json({ message: 'Token refreshed' });
+    createToken("access", res, newPayload);
+    setTokenCookie("refresh", res, newRefreshToken);
 
+    return res.status(200).json({ message: "Token refreshed" });
   } catch (error) {
     // covers invalid signature and TokenExpiredError (a subclass)
     if (error instanceof jwt.JsonWebTokenError) {
@@ -122,11 +180,22 @@ export async function refreshTokenHandler(req: Request, res: Response) {
       return res.status(401).json({ message: "Unauthorized" });
     }
     console.error("Refresh token error:", error);
-    return res.status(500).json({ message: 'Internal server error' });
+    return res.status(500).json({ message: "Internal server error" });
   }
 }
 //________________________________________________________________________________________
-export async function logoutHandler(_: Request, res: Response) {
+export async function logoutHandler(req: Request, res: Response) {
+  const token = req.cookies?.refresh_token;
+  if (token) {
+    try {
+      verifyToken("refresh", token);
+      await prisma.refreshToken.updateMany({
+        where: { tokenHash: hashRefreshToken(token), revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+    } catch {
+      // Logout still clears the browser cookies if the token is invalid/expired.
+    }
+  }
   clearAuthCookies(res);
-  return res.status(200).json({ message: "Logged out successfully" });
 }
