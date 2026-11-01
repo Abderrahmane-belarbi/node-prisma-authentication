@@ -1,43 +1,42 @@
 import { Request, Response } from "express";
-import jwt from 'jsonwebtoken';
+import jwt from "jsonwebtoken";
 import { createHash } from "node:crypto";
 import { Role } from "../../../generated/prisma/enums";
 
 type Payload = {
   sub: string;
   role: Role;
-  tokenVersion: number
-}
+  tokenVersion: number;
+};
 
-type TokenType = 'access' | 'refresh';
+type TokenType = "access" | "refresh";
 
 const TOKEN_CONFIG = {
   access: {
     secret: process.env.JWT_ACCESS_SECRET!,
-    cookieName: 'access_token',
+    cookieName: "access_token",
     duration: 15 * 60, // 15x60 seconds (15 minutes)
     // The path attribute tells the browser on which URLs to send this cookie. A cookie is sent only if the request URL starts with its path.
-    path: "/" // Every route (/users, /orders, /auth/...), because any protected route needs it
-
+    path: "/", // Every route (/users, /orders, /auth/...), because any protected route needs it
   },
   refresh: {
     secret: process.env.JWT_REFRESH_SECRET!,
-    cookieName: 'refresh_token',
+    cookieName: "refresh_token",
     duration: 30 * 24 * 60 * 60, // 30x24x60x60 seconds (30 days)
-    path: "/auth" // Only /auth/... routes (refresh, logout)
-  }
-}
+    path: "/auth", // Only /auth/... routes (refresh, logout)
+  },
+};
 
-const cookieBase = { 
-  httpOnly: true, 
-  secure: process.env.NODE_ENV === "production", 
-  sameSite: "lax" as const // const at the end it tell typescript that we explicit want word "lax" and not as any string type inferred: { sameSite: "lax" }  ✅ accepted
-}; 
+const cookieBase = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax" as const, // const at the end it tell typescript that we explicit want word "lax" and not as any string type inferred: { sameSite: "lax" }  ✅ accepted
+};
 
 export function createToken(
   tokenType: TokenType,
   res: Response,
-  payload: Payload
+  payload: Payload,
 ) {
   const token = signToken(tokenType, payload);
   return setTokenCookie(tokenType, res, token);
@@ -47,16 +46,20 @@ export function signToken(tokenType: TokenType, payload: Payload) {
   const config = TOKEN_CONFIG[tokenType];
   return jwt.sign(payload, config.secret, {
     algorithm: "HS256",
-    expiresIn: config.duration
+    expiresIn: config.duration,
   });
 }
 
-export function setTokenCookie(tokenType: TokenType, res: Response, token: string) {
+export function setTokenCookie(
+  tokenType: TokenType,
+  res: Response,
+  token: string,
+) {
   const config = TOKEN_CONFIG[tokenType];
   return res.cookie(config.cookieName, token, {
     ...cookieBase,
     maxAge: config.duration * 1000,
-    path: config.path 
+    path: config.path,
   });
 }
 
@@ -70,23 +73,29 @@ export function hashRefreshToken(token: string) {
 
 export function clearAuthCookies(res: Response) {
   // path must match the one used when the cookie was set
-  res.clearCookie(TOKEN_CONFIG.access.cookieName, { ...cookieBase, path: TOKEN_CONFIG.access.path });
-  res.clearCookie(TOKEN_CONFIG.refresh.cookieName, { ...cookieBase, path: TOKEN_CONFIG.refresh.path });
+  res.clearCookie(TOKEN_CONFIG.access.cookieName, {
+    ...cookieBase,
+    path: TOKEN_CONFIG.access.path,
+  });
+  res.clearCookie(TOKEN_CONFIG.refresh.cookieName, {
+    ...cookieBase,
+    path: TOKEN_CONFIG.refresh.path,
+  });
 }
 
 export function verifyToken(tokenType: TokenType, token: string) {
-  const secret = TOKEN_CONFIG[tokenType].secret
+  const secret = TOKEN_CONFIG[tokenType].secret;
   return jwt.verify(token, secret, {
-      algorithms: ["HS256"]
-    }) as { sub: string, role: Role, tokenVersion: number };
+    algorithms: ["HS256"],
+  }) as { sub: string; role: Role; tokenVersion: number };
 }
 
 export function extractAccessToken(req: Request): string | null {
   // Check the Authorization header first
   const header = req.headers.authorization;
-  if(header) {
-    const [scheme, token] = header.split(' ');
-    return scheme.toLowerCase() === 'bearer' && token ? token : null
+  if (header) {
+    const [scheme, token] = header.split(" ");
+    return scheme.toLowerCase() === "bearer" && token ? token : null;
   }
   // Fallback to cookie if header is not present
   return req.cookies?.access_token ?? null; // web fallback

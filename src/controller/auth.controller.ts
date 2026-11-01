@@ -101,7 +101,7 @@ export async function loginHandler(req: Request, res: Response) {
         tokenHash: hashRefreshToken(refreshToken),
         userId: user.id,
         expiresAt: getRefreshTokenExpiry(),
-      },
+      }
     });
     setTokenCookie("refresh", res, refreshToken);
 
@@ -119,22 +119,22 @@ export async function refreshTokenHandler(req: Request, res: Response) {
   const token = req.cookies?.refresh_token;
   if (!token) return res.status(401).json({ message: "Unauthorized" });
   try {
-    const decodedPayload = verifyToken("refresh", token);
+    const payload = verifyToken("refresh", token);
     const tokenHash = hashRefreshToken(token);
     const storedToken = await prisma.refreshToken.findUnique({
       where: { tokenHash },
     });
     const user = await prisma.user.findUnique({
-      where: { id: decodedPayload.sub },
+      where: { id: payload.sub },
     });
 
     if (
       !storedToken ||
-      storedToken.userId !== decodedPayload.sub ||
+      storedToken.userId !== payload.sub ||
       storedToken.revokedAt ||
       storedToken.expiresAt <= new Date() ||
       !user ||
-      user.tokenVersion !== decodedPayload.tokenVersion
+      user.tokenVersion !== payload.tokenVersion
     ) {
       clearAuthCookies(res);
       return res.status(401).json({ message: "Unauthorized" });
