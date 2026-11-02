@@ -13,7 +13,6 @@ import {
   signToken,
   verifyToken,
 } from "../lib/utils/auth.utils";
-import { Role } from "../../generated/prisma/enums";
 import jwt from "jsonwebtoken";
 
 //________________________________________________________________________________________
