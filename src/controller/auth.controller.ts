@@ -197,4 +197,5 @@ export async function logoutHandler(req: Request, res: Response) {
     }
   }
   clearAuthCookies(res);
+  return res.status(200).json({ message: "Logged out successfully" });
 }
