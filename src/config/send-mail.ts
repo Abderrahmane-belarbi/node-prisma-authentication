@@ -1,23 +1,13 @@
 import "dotenv/config";
 import { google, type gmail_v1 } from "googleapis";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
-import { requireEnv } from "../lib/utils";
+import { requireEnv, validateEmail } from "../lib/utils/input.utils"; 
 
 export interface SendMailOptions {
   to: string;
   subject: string;
   text?: string;
   html?: string;
-}
-
-function validateEmail(value: string): void {
-  // Accept one simple email address, not a recipient list.
-  if (
-    typeof value !== "string" ||
-    !/^[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+$/.test(value)
-  ) {
-    throw new Error("Invalid email address");
-  }
 }
 
 let gmailClient: gmail_v1.Gmail | undefined;
@@ -48,28 +38,6 @@ export async function sendMail({
   text,
   html,
 }: SendMailOptions): Promise<gmail_v1.Schema$Message> {
-  validateEmail(to);
-
-  if (
-    typeof subject !== "string" ||
-    !subject.trim() ||
-    /[\r\n]/.test(subject)
-  ) {
-    throw new Error("Invalid email subject");
-  }
-
-  if (text !== undefined && typeof text !== "string") {
-    throw new Error("Email text must be a string");
-  }
-
-  if (html !== undefined && typeof html !== "string") {
-    throw new Error("Email HTML must be a string");
-  }
-
-  if (!text?.trim() && !html?.trim()) {
-    throw new Error("Provide email text or HTML");
-  }
-
   const from = requireEnv("EMAIL_FROM");
   validateEmail(from);
 

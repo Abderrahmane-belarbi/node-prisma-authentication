@@ -3,7 +3,7 @@ import jwt from "jsonwebtoken";
 import { createHash } from "node:crypto";
 import { Role } from "../../../generated/prisma/enums";
 import { sendMail } from "../../config/send-mail";
-import { requireEnv } from ".";
+import { requireEnv } from "./input.utils"; 
 
 type Payload = {
   sub: string;

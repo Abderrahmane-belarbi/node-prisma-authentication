@@ -12,3 +12,20 @@ export function toFieldsErrors(error: ZodError) {
     password: flat?.password?.[0],
   };
 }
+
+export function validateEmail(value: string): void {
+  if (
+    typeof value !== "string" ||
+    !/^[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+$/.test(value)
+  ) {
+    throw new Error("Invalid email address");
+  }
+}
+
+export function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value?.trim()) {
+    throw new Error(`Missing environment variable: ${name}`);
+  }
+  return value;
+}
