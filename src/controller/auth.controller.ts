@@ -100,7 +100,7 @@ export async function loginHandler(req: Request, res: Response) {
         tokenHash: hashRefreshToken(refreshToken),
         userId: user.id,
         expiresAt: getRefreshTokenExpiry(),
-      }
+      },
     });
     setTokenCookie("refresh", res, refreshToken);
 
@@ -185,17 +185,20 @@ export async function refreshTokenHandler(req: Request, res: Response) {
 //________________________________________________________________________________________
 export async function logoutHandler(req: Request, res: Response) {
   const token = req.cookies?.refresh_token;
-  if (token) {
+  clearAuthCookies(res);
+
+  if (typeof token === "string" && token.length > 0) {
     try {
-      verifyToken("refresh", token);
       await prisma.refreshToken.updateMany({
         where: { tokenHash: hashRefreshToken(token), revokedAt: null },
         data: { revokedAt: new Date() },
       });
     } catch {
-      // Logout still clears the browser cookies if the token is invalid/expired.
+      return res.status(503).json({
+        message: "Cookies cleared, but session revocation could not be confirmed.",
+      });
     }
   }
-  clearAuthCookies(res);
+
   return res.status(200).json({ message: "Logged out successfully" });
 }
