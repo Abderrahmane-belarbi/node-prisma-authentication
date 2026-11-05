@@ -14,7 +14,7 @@ import {
   verifyToken,
 } from "../lib/utils/auth.utils";
 import jwt from "jsonwebtoken";
-
+import crypto from 'crypto';
 //________________________________________________________________________________________
 export async function registerHandler(req: Request, res: Response) {
   const validation = UserRegisterSchema.safeParse(req.body);
@@ -58,7 +58,6 @@ export async function registerHandler(req: Request, res: Response) {
 // Used to keep response time similar when the email doesn't exist.
 // Use the same cost factor (12 here) as in your register handler.
 const DUMMY_HASH = bcrypt.hashSync("dummy-password", 12);
-
 export async function loginHandler(req: Request, res: Response) {
   const validation = UserLoginSchema.safeParse(req.body);
   if (!validation.success) {
@@ -76,7 +75,6 @@ export async function loginHandler(req: Request, res: Response) {
     if (!user || !user.passwordHash || !passwordMatch) {
       return res.status(401).json({ message: "Invalid email or password" });
     }
-
     if (
       !user.emailVerified &&
       process.env.REQUIRE_EMAIL_VERIFICATION === "true"
@@ -85,13 +83,11 @@ export async function loginHandler(req: Request, res: Response) {
         .status(403)
         .json({ message: "Please verify your email before you login" });
     }
-
     const payload = {
       sub: user.id,
       role: user.role,
       tokenVersion: user.tokenVersion,
     };
-
     // Keep access tokens short lived; persist only a hash of the refresh token.
     createToken("access", res, payload);
     const refreshToken = signToken("refresh", payload);
@@ -103,10 +99,7 @@ export async function loginHandler(req: Request, res: Response) {
       },
     });
     setTokenCookie("refresh", res, refreshToken);
-
-    return res.status(200).json({
-      message: "Login successful",
-    });
+    return res.status(200).json({ message: "Login successful" });
   } catch (error) {
     console.error("Login error:", error);
     return res.status(500).json({ message: `Internal server error` });
@@ -195,10 +188,38 @@ export async function logoutHandler(req: Request, res: Response) {
       });
     } catch {
       return res.status(503).json({
-        message: "Cookies cleared, but session revocation could not be confirmed.",
+        message:
+          "Cookies cleared, but session revocation could not be confirmed.",
       });
     }
   }
 
   return res.status(200).json({ message: "Logged out successfully" });
+}
+
+export async function forgetPassword(req: Request, res: Response) {
+  const { email } = req.body as { email?: string };
+  if(!email) res.status(400).json({ message: "Email is required" });
+  try {
+    const user = await prisma.user.findUnique({ where: { email } });
+    if(!user) return res.status(400).json({ message: "Invalid email" });
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHahs = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const duration = (Number(process.env.RESET_PASSWORD_EXPIRES) ?? 5) * 60 * 1000;
+    const resetPasswordExpires = new Date(Date.now() + duration);
+    user.resetPasswordToken = tokenHahs;
+    user.resetPasswordExpires = resetPasswordExpires;
+    await prisma.user.update({ where: { id: user.id }, data: user });
+    const baseUrl = process.env.NODE_ENV === "development" ? process.env.APP_PRIVATE_URL : process.env.APP_PUBLIC_URL
+    const resetUrl = `${baseUrl}/auth/reset-password?token=${rawToken}`;
+    // Send email to user resetPasswordToken not the hashed
+    // Send the raw token to the user in the link
+    // When user comes back with raw token, you hash it and compare to DB
+    return res
+      .status(200)
+      .json({ message: "If an account exists, a reset link has been sent. Check your inbox and spam folder." });
+  } catch (error) {
+    console.error("Forget password error,", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
 }

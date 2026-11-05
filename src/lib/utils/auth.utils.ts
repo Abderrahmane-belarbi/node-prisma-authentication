@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import { createHash } from "node:crypto";
 import { Role } from "../../../generated/prisma/enums";
+import { sendMail } from "../../config/send-mail";
+import { requireEnv } from ".";
 
 type Payload = {
   sub: string;
@@ -99,4 +101,48 @@ export function extractAccessToken(req: Request): string | null {
   }
   // Fallback to cookie if header is not present
   return req.cookies?.access_token ?? null; // web fallback
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export async function sendVerificationEmail(
+  email: string,
+  token: string
+): Promise<void> {
+  // Pass a securely generated token from your authentication logic.
+  const safeToken = escapeHtml(token);
+
+  await sendMail({
+    to: email,
+    subject: `Verify your email — ${requireEnv("APP_NAME")}`,
+
+    // Fallback for email clients that don't display HTML.
+    text: [
+      `Welcome to ${requireEnv("APP_NAME")}!`,
+      `Your verification code is: ${token}`,
+      "If you didn't request this, ignore this email.",
+    ].join("\n\n"),
+
+    html: `
+      <div style="font-family:Arial,sans-serif;padding:24px;color:#111827">
+        <h2>Welcome to ${requireEnv("APP_NAME")}</h2>
+        <p>Your verification code is:</p>
+
+        <p style="font-size:28px;font-weight:bold;letter-spacing:4px">
+          ${safeToken}
+        </p>
+
+        <p style="font-size:13px;color:#6b7280">
+          If you didn't request this, ignore this email.
+        </p>
+      </div>
+    `,
+  });
 }
