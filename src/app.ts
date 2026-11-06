@@ -3,6 +3,7 @@ import cookieParser from "cookie-parser";
 import dotenv from 'dotenv';
 import authRouter from "./routes/auth.routes"
 import userRouter from "./routes/user.routes"
+import googleConnectionRouter from "./config/connect-gmail";
 import { Role } from "../generated/prisma/enums";
 
 dotenv.config();
@@ -20,6 +21,7 @@ app.use(cookieParser());
 app.use('/auth', authRouter);
 // user routes
 app.use('/users', userRouter);
+app.use("/", googleConnectionRouter);
 
 function showRoles(...roles: Role[]) {
   return roles;   // an array

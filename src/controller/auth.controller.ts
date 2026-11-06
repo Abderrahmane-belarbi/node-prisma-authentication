@@ -14,7 +14,9 @@ import {
   verifyToken,
 } from "../lib/utils/auth.utils";
 import jwt from "jsonwebtoken";
-import crypto from 'crypto';
+import crypto from "crypto";
+import { sendMail } from "../config/send-mail";
+import { resetPasswordTemplate } from "../lib/utils/templates";
 //________________________________________________________________________________________
 export async function registerHandler(req: Request, res: Response) {
   const validation = UserRegisterSchema.safeParse(req.body);
@@ -198,26 +200,56 @@ export async function logoutHandler(req: Request, res: Response) {
 }
 
 export async function forgetPassword(req: Request, res: Response) {
+  const appName = process.env.APP_NAME || "Your App";
+  const expiresInMinutes = Number(process.env.RESET_PASSWORD_EXPIRES) || 10;
   const { email } = req.body as { email?: string };
-  if(!email) res.status(400).json({ message: "Email is required" });
+  if (!email) res.status(400).json({ message: "Email is required" });
   try {
     const user = await prisma.user.findUnique({ where: { email } });
     if(!user) return res.status(400).json({ message: "Invalid email" });
-    const rawToken = crypto.randomBytes(32).toString('hex');
-    const tokenHahs = crypto.createHash('sha256').update(rawToken).digest('hex');
-    const duration = (Number(process.env.RESET_PASSWORD_EXPIRES) ?? 5) * 60 * 1000;
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHahs = crypto
+      .createHash("sha256")
+      .update(rawToken)
+      .digest("hex");
+    const duration = expiresInMinutes * 60 * 1000;
     const resetPasswordExpires = new Date(Date.now() + duration);
     user.resetPasswordToken = tokenHahs;
     user.resetPasswordExpires = resetPasswordExpires;
     await prisma.user.update({ where: { id: user.id }, data: user });
-    const baseUrl = process.env.NODE_ENV === "development" ? process.env.APP_PRIVATE_URL : process.env.APP_PUBLIC_URL
+    const baseUrl =
+      process.env.NODE_ENV === "development"
+        ? process.env.APP_PRIVATE_URL
+        : process.env.APP_PUBLIC_URL;
     const resetUrl = `${baseUrl}/auth/reset-password?token=${rawToken}`;
     // Send email to user resetPasswordToken not the hashed
     // Send the raw token to the user in the link
     // When user comes back with raw token, you hash it and compare to DB
-    return res
-      .status(200)
-      .json({ message: "If an account exists, a reset link has been sent. Check your inbox and spam folder." });
+    try {
+      await sendMail({
+        to: email!,
+        subject: `Reset your ${appName} password`,
+
+        text: [
+          "to reset your password.",
+          "",
+          `Reset your password: ${resetUrl.toString()}`,
+          "",
+          `This link expires in ${expiresInMinutes} minutes.`,
+          "",
+          "If you did not request this, you can ignore this email.",
+          "Your password has not been changed.",
+        ].join("\n"),
+
+        html: resetPasswordTemplate(appName, new URL(resetUrl), expiresInMinutes),
+      });
+    } catch {
+      // Remove this failed request's token without deleting a newer one.
+    }
+    return res.status(200).json({
+      message:
+        "If an account exists, a reset link has been sent. Check your inbox and spam folder.",
+    });
   } catch (error) {
     console.error("Forget password error,", error);
     return res.status(500).json({ message: "Internal server error" });
