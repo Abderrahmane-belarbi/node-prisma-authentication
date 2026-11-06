@@ -22,7 +22,7 @@ import {
 } from "../lib/utils/templates";
 import { isValidTokenFormat } from "../lib/utils";
 
-const appName = process.env.APP_NAME || "Your App";
+const appName = requireEnv("APP_NAME") || "Your App";
 const baseUrl =
   process.env.NODE_ENV === "development"
     ? requireEnv("APP_PRIVATE_URL")
