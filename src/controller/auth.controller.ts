@@ -20,6 +20,7 @@ import {
   resetPasswordTemplate,
   verificationEmailTemplate,
 } from "../lib/utils/templates";
+import { isValidTokenFormat } from "../lib/utils";
 
 const appName = process.env.APP_NAME || "Your App";
 const baseUrl =
@@ -29,7 +30,7 @@ const baseUrl =
 //________________________________________________________________________________________
 export async function registerHandler(req: Request, res: Response) {
   const expiresInMinutes = Number(process.env.EMAIL_VERIFICATION_EXPIRES) || 10;
-  
+
   const validation = UserRegisterSchema.safeParse(req.body);
   if (!validation.success) {
     const fieldErrors = toFieldsErrors(validation.error);
@@ -51,14 +52,19 @@ export async function registerHandler(req: Request, res: Response) {
     const verificationUrl = new URL("/auth/verify-email", baseUrl);
     const rawToken = crypto.randomBytes(32).toString("hex");
     verificationUrl.searchParams.set("token", rawToken);
-    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const tokenHash = crypto
+      .createHash("sha256")
+      .update(rawToken)
+      .digest("hex");
     const user = await prisma.user.create({
       data: {
         name,
         email,
         passwordHash: hashedPassword,
         emailVerificationToken: tokenHash,
-        emailVerificationExpires: new Date(Date.now() + expiresInMinutes * 60 * 1000),
+        emailVerificationExpires: new Date(
+          Date.now() + expiresInMinutes * 60 * 1000,
+        ),
       },
     });
     // send a verification email with a token
@@ -66,7 +72,6 @@ export async function registerHandler(req: Request, res: Response) {
       await sendMail({
         to: user.email,
         subject: `Verify your email for ${appName}`,
-
         text: [
           `Thanks for signing up for ${appName}!`,
           "",
@@ -77,7 +82,6 @@ export async function registerHandler(req: Request, res: Response) {
           "",
           "If you did not create an account, you can ignore this email.",
         ].join("\n"),
-
         html: verificationEmailTemplate(
           appName,
           verificationUrl,
@@ -246,10 +250,75 @@ export async function logoutHandler(req: Request, res: Response) {
   return res.status(200).json({ message: "Logged out successfully" });
 }
 
+export async function verifyEmailHandler(req: Request, res: Response) {
+  const token = req.body?.token;
+
+  if (!isValidTokenFormat(token))
+    return res.status(400).json({ message: "Invalid verification token." });
+
+  try {
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const user = await prisma.user.findUnique({
+      where: {
+        emailVerificationToken: tokenHash,
+      },
+      select: {
+        id: true,
+        emailVerified: true,
+        emailVerificationExpires: true,
+      },
+    });
+    if (!user)
+      return res
+        .status(400)
+        .json({ message: "Invalid or already-used verification link." });
+
+    if (user.emailVerified)
+      return res.status(200).json({
+        message: "Your email is already verified. You can log in.",
+      });
+
+    if (
+      !user.emailVerificationExpires ||
+      user.emailVerificationExpires.getTime() <= Date.now()
+    )
+      return res.status(400).json({
+        message: "Verification link expired. Request a new email.",
+      });
+
+    const result = await prisma.user.updateMany({
+      where: {
+        emailVerificationToken: tokenHash,
+        emailVerificationExpires: { gt: new Date() },
+        emailVerified: null,
+      },
+      data: {
+        emailVerified: new Date(Date.now()),
+        emailVerificationToken: null,
+        emailVerificationExpires: null,
+      },
+    });
+
+    if (result.count !== 1)
+      return res.status(400).json({
+        message: "Invalid, expired, or already-used verification link.",
+      });
+
+    return res.status(200).json({
+      message: "Email verified successfully. You can now log in.",
+    });
+  } catch (error) {
+    console.error("Email verification failed.", error);
+    return res.status(500).json({
+      message: "Could not verify your email. Please try again.",
+    });
+  }
+}
+
 export async function forgetPassword(req: Request, res: Response) {
   const expiresInMinutes = Number(process.env.RESET_PASSWORD_EXPIRES) || 10;
   const { email } = req.body as { email?: string };
-  if (!email) res.status(400).json({ message: "Email is required" });
+  if (!email) return res.status(400).json({ message: "Email is required" });
   try {
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) return res.status(400).json({ message: "Invalid email" });
@@ -283,11 +352,7 @@ export async function forgetPassword(req: Request, res: Response) {
           "Your password has not been changed.",
         ].join("\n"),
 
-        html: resetPasswordTemplate(
-          appName,
-          resetUrl,
-          expiresInMinutes,
-        ),
+        html: resetPasswordTemplate(appName, resetUrl, expiresInMinutes),
       });
     } catch {
       console.error("Failed to send reset password email");

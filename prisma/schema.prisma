@@ -26,9 +26,9 @@ model User {
   twoFactorEnable Boolean @default(false)
   twoFactorSecret String?
   tokenVersion Int @default(0)
-  emailVerificationToken String?
+  emailVerificationToken String? @unique
   emailVerificationExpires DateTime?
-  resetPasswordToken String?
+  resetPasswordToken String? @unique
   resetPasswordExpires DateTime?
 
   refreshTokens RefreshToken[]
