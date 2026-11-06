@@ -29,7 +29,7 @@ const baseUrl =
 //________________________________________________________________________________________
 export async function registerHandler(req: Request, res: Response) {
   const expiresInMinutes = Number(process.env.EMAIL_VERIFICATION_EXPIRES) || 10;
-  const verificationUrl = new URL("/auth/verify-email", baseUrl);
+  
   const validation = UserRegisterSchema.safeParse(req.body);
   if (!validation.success) {
     const fieldErrors = toFieldsErrors(validation.error);
@@ -48,14 +48,20 @@ export async function registerHandler(req: Request, res: Response) {
     // 3. Hash password
     const hashedPassword = await bcrypt.hash(password, 12);
     // 4. Create user
+    const verificationUrl = new URL("/auth/verify-email", baseUrl);
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    verificationUrl.searchParams.set("token", rawToken);
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
     const user = await prisma.user.create({
       data: {
         name,
         email,
         passwordHash: hashedPassword,
+        emailVerificationToken: tokenHash,
+        emailVerificationExpires: new Date(Date.now() + expiresInMinutes * 60 * 1000),
       },
     });
-    // (e.g., send a verification email with a token)
+    // send a verification email with a token
     try {
       await sendMail({
         to: user.email,
@@ -80,6 +86,13 @@ export async function registerHandler(req: Request, res: Response) {
       });
     } catch (error) {
       console.error("Failed to send verification email:", error);
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          emailVerificationToken: null,
+          emailVerificationExpires: null,
+        },
+      });
     }
     // 5. Return response
     return res.status(201).json({
