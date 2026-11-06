@@ -206,7 +206,7 @@ export async function forgetPassword(req: Request, res: Response) {
   if (!email) res.status(400).json({ message: "Email is required" });
   try {
     const user = await prisma.user.findUnique({ where: { email } });
-    if(!user) return res.status(400).json({ message: "Invalid email" });
+    if (!user) return res.status(400).json({ message: "Invalid email" });
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHahs = crypto
       .createHash("sha256")
@@ -241,10 +241,23 @@ export async function forgetPassword(req: Request, res: Response) {
           "Your password has not been changed.",
         ].join("\n"),
 
-        html: resetPasswordTemplate(appName, new URL(resetUrl), expiresInMinutes),
+        html: resetPasswordTemplate(
+          appName,
+          new URL(resetUrl),
+          expiresInMinutes,
+        ),
       });
     } catch {
-      // Remove this failed request's token without deleting a newer one.
+      await prisma.user.updateMany({
+        where: {
+          id: user.id,
+          resetPasswordToken: tokenHahs,
+        },
+        data: {
+          resetPasswordToken: null,
+          resetPasswordExpires: null,
+        },
+      });
     }
     return res.status(200).json({
       message:
