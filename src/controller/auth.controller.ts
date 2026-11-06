@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { UserRegisterSchema } from "../validation/register.validation";
-import { toFieldsErrors } from "../lib/utils/input.utils";
+import { requireEnv, toFieldsErrors } from "../lib/utils/input.utils";
 import { prisma } from "../lib/prisma";
 import bcrypt from "bcryptjs";
 import { UserLoginSchema } from "../validation/login.validation";
@@ -16,9 +16,20 @@ import {
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import { sendMail } from "../config/send-mail";
-import { resetPasswordTemplate } from "../lib/utils/templates";
+import {
+  resetPasswordTemplate,
+  verificationEmailTemplate,
+} from "../lib/utils/templates";
+
+const appName = process.env.APP_NAME || "Your App";
+const baseUrl =
+  process.env.NODE_ENV === "development"
+    ? requireEnv("APP_PRIVATE_URL")
+    : requireEnv("APP_PUBLIC_URL");
 //________________________________________________________________________________________
 export async function registerHandler(req: Request, res: Response) {
+  const expiresInMinutes = Number(process.env.EMAIL_VERIFICATION_EXPIRES) || 10;
+  const verificationUrl = new URL("/auth/verify-email", baseUrl);
   const validation = UserRegisterSchema.safeParse(req.body);
   if (!validation.success) {
     const fieldErrors = toFieldsErrors(validation.error);
@@ -37,16 +48,39 @@ export async function registerHandler(req: Request, res: Response) {
     // 3. Hash password
     const hashedPassword = await bcrypt.hash(password, 12);
     // 4. Create user
-    await prisma.user.create({
+    const user = await prisma.user.create({
       data: {
         name,
         email,
         passwordHash: hashedPassword,
       },
     });
-    // TODO: Implement email verification logic here
     // (e.g., send a verification email with a token)
+    try {
+      await sendMail({
+        to: user.email,
+        subject: `Verify your email for ${appName}`,
 
+        text: [
+          `Thanks for signing up for ${appName}!`,
+          "",
+          "Confirm your email address using this link:",
+          verificationUrl.toString(),
+          "",
+          `This link expires in ${expiresInMinutes} minutes.`,
+          "",
+          "If you did not create an account, you can ignore this email.",
+        ].join("\n"),
+
+        html: verificationEmailTemplate(
+          appName,
+          verificationUrl,
+          expiresInMinutes,
+        ),
+      });
+    } catch (error) {
+      console.error("Failed to send verification email:", error);
+    }
     // 5. Return response
     return res.status(201).json({
       message: "Registration successful",
@@ -200,7 +234,6 @@ export async function logoutHandler(req: Request, res: Response) {
 }
 
 export async function forgetPassword(req: Request, res: Response) {
-  const appName = process.env.APP_NAME || "Your App";
   const expiresInMinutes = Number(process.env.RESET_PASSWORD_EXPIRES) || 10;
   const { email } = req.body as { email?: string };
   if (!email) res.status(400).json({ message: "Email is required" });
@@ -217,11 +250,7 @@ export async function forgetPassword(req: Request, res: Response) {
     user.resetPasswordToken = tokenHahs;
     user.resetPasswordExpires = resetPasswordExpires;
     await prisma.user.update({ where: { id: user.id }, data: user });
-    const baseUrl =
-      process.env.NODE_ENV === "development"
-        ? process.env.APP_PRIVATE_URL
-        : process.env.APP_PUBLIC_URL;
-    const resetUrl = `${baseUrl}/auth/reset-password?token=${rawToken}`;
+    const resetUrl = new URL(`/auth/reset-password?token=${rawToken}`, baseUrl);
     // Send email to user resetPasswordToken not the hashed
     // Send the raw token to the user in the link
     // When user comes back with raw token, you hash it and compare to DB
@@ -243,11 +272,12 @@ export async function forgetPassword(req: Request, res: Response) {
 
         html: resetPasswordTemplate(
           appName,
-          new URL(resetUrl),
+          resetUrl,
           expiresInMinutes,
         ),
       });
     } catch {
+      console.error("Failed to send reset password email");
       await prisma.user.updateMany({
         where: {
           id: user.id,
