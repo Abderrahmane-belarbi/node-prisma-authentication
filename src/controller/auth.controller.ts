@@ -323,13 +323,13 @@ export async function forgetPassword(req: Request, res: Response) {
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) return res.status(400).json({ message: "Invalid email" });
     const rawToken = crypto.randomBytes(32).toString("hex");
-    const tokenHahs = crypto
+    const tokenHash = crypto
       .createHash("sha256")
       .update(rawToken)
       .digest("hex");
     const duration = expiresInMinutes * 60 * 1000;
     const resetPasswordExpires = new Date(Date.now() + duration);
-    user.resetPasswordToken = tokenHahs;
+    user.resetPasswordToken = tokenHash;
     user.resetPasswordExpires = resetPasswordExpires;
     await prisma.user.update({ where: { id: user.id }, data: user });
     const resetUrl = new URL(`/auth/reset-password?token=${rawToken}`, baseUrl);
@@ -359,7 +359,7 @@ export async function forgetPassword(req: Request, res: Response) {
       await prisma.user.updateMany({
         where: {
           id: user.id,
-          resetPasswordToken: tokenHahs,
+          resetPasswordToken: tokenHash,
         },
         data: {
           resetPasswordToken: null,
@@ -373,6 +373,91 @@ export async function forgetPassword(req: Request, res: Response) {
     });
   } catch (error) {
     console.error("Forget password error,", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+}
+
+export async function resetPasswordHandler(req: Request, res: Response) {
+  const { token, newPassword } = req.body as {
+    token?: string;
+    newPassword?: string;
+  };
+  if (!token || !newPassword)
+    return res
+      .status(400)
+      .json({ message: "Token and new password are required" });
+  if (!isValidTokenFormat(token)) {
+    return res.status(400).json({ message: "Invalid token format" });
+  }
+  const passwordValidation =
+    UserRegisterSchema.shape.password.safeParse(newPassword);
+  if (!passwordValidation.success) {
+    return res.status(400).json({ message: "Invalid password format" });
+  }
+  try {
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const user = await prisma.user.findUnique({
+      where: {
+        resetPasswordToken: tokenHash,
+        resetPasswordExpires: { gt: new Date() },
+      },
+      select: {
+        id: true,
+        resetPasswordExpires: true,
+      },
+    });
+    if (
+      !user ||
+      !user.resetPasswordExpires ||
+      user.resetPasswordExpires.getTime() <= Date.now()
+    ) {
+      return res.status(400).json({
+        message: "Invalid or expired reset link.",
+      });
+    }
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    const changed = await prisma.$transaction(async (tx) => {
+      // Recheck token and expiry at the moment we change the password.
+      const result = await tx.user.updateMany({
+        where: {
+          id: user.id,
+          resetPasswordToken: tokenHash,
+          resetPasswordExpires: { gt: new Date() },
+        },
+        data: {
+          passwordHash: hashedPassword,
+          resetPasswordToken: null,
+          resetPasswordExpires: null,
+          tokenVersion: { increment: 1 },
+        },
+      });
+      if (result.count !== 1) {
+        return false;
+      }
+      // Revoke the user's existing application refresh tokens.
+      await tx.refreshToken.updateMany({
+        where: {
+          userId: user.id,
+          revokedAt: null,
+        },
+        data: {
+          revokedAt: new Date(),
+        },
+      });
+      return true;
+    });
+
+    if (!changed) {
+      return res.status(400).json({
+        message: "Invalid, expired, or already-used reset link.",
+      });
+    }
+    clearAuthCookies(res);
+    res.status(200).json({
+      message: "Password reset successful. Please log in again.",
+    });
+  } catch (error) {
+    console.error("Reset password error:", error);
     return res.status(500).json({ message: "Internal server error" });
   }
 }
