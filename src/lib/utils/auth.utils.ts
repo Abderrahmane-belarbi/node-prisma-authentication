@@ -12,24 +12,25 @@ type Payload = {
 };
 
 type TokenType = "access" | "refresh";
-
+export const accessTokenDuration = 15 * 60; // 15 minutes in seconds
+export const refreshTokenDuration = 30 * 24 * 60 * 60; // 30 days in seconds
 const TOKEN_CONFIG = {
   access: {
     secret: process.env.JWT_ACCESS_SECRET!,
     cookieName: "access_token",
-    duration: 15 * 60, // 15x60 seconds (15 minutes)
+    duration: accessTokenDuration,
     // The path attribute tells the browser on which URLs to send this cookie. A cookie is sent only if the request URL starts with its path.
     path: "/", // Every route (/users, /orders, /auth/...), because any protected route needs it
   },
   refresh: {
     secret: process.env.JWT_REFRESH_SECRET!,
     cookieName: "refresh_token",
-    duration: 30 * 24 * 60 * 60, // 30x24x60x60 seconds (30 days)
+    duration: refreshTokenDuration, // 30x24x60x60 seconds (30 days)
     path: "/auth", // Only /auth/... routes (refresh, logout)
   },
 };
 
-const cookieBase = {
+export const cookieBase = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
   sameSite: "lax" as const, // const at the end it tell typescript that we explicit want word "lax" and not as any string type inferred: { sameSite: "lax" }  ✅ accepted

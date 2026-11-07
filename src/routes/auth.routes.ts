@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { forgetPassword, loginHandler, logoutHandler, refreshTokenHandler, registerHandler, resendVerificationEmailHandler, resetPasswordHandler, verifyEmailHandler } from "../controller/auth.controller";
+import { forgetPassword, googleCallbackHandler, googleLoginHandler, loginHandler, logoutHandler, refreshTokenHandler, registerHandler, resendVerificationEmailHandler, resetPasswordHandler, verifyEmailHandler } from "../controller/auth.controller";
 import {
   loginLimiter,
   registerLimiter,
@@ -18,5 +18,6 @@ router.post("/verify-email", forgotPasswordLimiter, verifyEmailHandler);
 router.post("/forgot-password", forgetPassword);
 router.post("/reset-password", resetPasswordLimiter, resetPasswordHandler);
 router.post("/resend-verification-email", resendVerificationLimiter, resendVerificationEmailHandler);
-
+router.get("/google", loginLimiter, googleLoginHandler);
+router.get("/google/callback", googleCallbackHandler);
 export default router;

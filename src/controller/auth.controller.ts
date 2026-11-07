@@ -5,7 +5,9 @@ import { prisma } from "../lib/prisma";
 import bcrypt from "bcryptjs";
 import { UserLoginSchema } from "../validation/login.validation";
 import {
+  accessTokenDuration,
   clearAuthCookies,
+  cookieBase,
   createToken,
   getRefreshTokenExpiry,
   hashRefreshToken,
@@ -21,6 +23,7 @@ import {
   verificationEmailTemplate,
 } from "../lib/utils/templates";
 import { isValidTokenFormat } from "../lib/utils";
+import { OAuth2Client } from "google-auth-library";
 
 const appName = requireEnv("APP_NAME") || "Your App";
 const baseUrl =
@@ -29,7 +32,8 @@ const baseUrl =
     : requireEnv("APP_PUBLIC_URL");
 const verificationExpiresInMinutes =
   Number(process.env.EMAIL_VERIFICATION_EXPIRES) || 10;
-const emailVerificationCooldown = Number(process.env.EMAIL_VERIFICATION_COOLDOWN) || 60;
+const emailVerificationCooldown =
+  Number(process.env.EMAIL_VERIFICATION_COOLDOWN) || 60;
 //________________________________________________________________________________________
 export async function registerHandler(req: Request, res: Response) {
   const validation = UserRegisterSchema.safeParse(req.body);
@@ -159,7 +163,6 @@ export async function loginHandler(req: Request, res: Response) {
     return res.status(500).json({ message: `Internal server error` });
   }
 }
-
 //________________________________________________________________________________________
 export async function refreshTokenHandler(req: Request, res: Response) {
   const token = req.cookies?.refresh_token;
@@ -468,7 +471,9 @@ export async function resendVerificationEmailHandler(
   res: Response,
 ) {
   // Reuse the same email validation used during registration.
-  const emailValidation = UserRegisterSchema.shape.email.safeParse(req.body?.email);
+  const emailValidation = UserRegisterSchema.shape.email.safeParse(
+    req.body?.email,
+  );
   if (!emailValidation.success) {
     return res.status(400).json({
       message: "Please provide a valid email address.",
@@ -497,7 +502,9 @@ export async function resendVerificationEmailHandler(
     verificationUrl.searchParams.set("token", rawToken);
 
     const now = new Date();
-    const nextAllowedAt = new Date(now.getTime() + emailVerificationCooldown * 1000); // 60 seconds cooldown
+    const nextAllowedAt = new Date(
+      now.getTime() + emailVerificationCooldown * 1000,
+    ); // 60 seconds cooldown
 
     // Check eligibility and save the new token in one database operation.
     // Concurrent requests cannot both pass the cooldown.
@@ -568,5 +575,118 @@ export async function resendVerificationEmailHandler(
     return res.status(500).json({
       message: "Unable to process your request. Please try again later.",
     });
+  }
+}
+
+export function getGoogleClient() {
+  const clientId = requireEnv("GOOGLE_CLIENT_ID");
+  const clientSecret = requireEnv("GOOGLE_CLIENT_SECRET");
+  const redirectUri =
+    process.env.NODE_ENV === "development"
+      ? requireEnv("LOCAL_GOOGLE_REDIRECT_URI")
+      : requireEnv("PUBLIC_GOOGLE_REDIRECT_URI");
+  if (!clientId || !clientSecret || !redirectUri) {
+    throw new Error("Google OAuth configuration is missing.");
+  }
+  return new OAuth2Client({ clientId, clientSecret, redirectUri });
+}
+
+function clearGoogleOAuthStateCookie(_req: Request, res: Response) {
+  res.clearCookie("google_oauth_state", {
+    httpOnly: true,
+    secure: process.env.MODE !== "development",
+    sameSite: "lax",
+  });
+}
+
+function setGoogleOAuthStateCookie(res: Response, state: string) {
+  res.cookie("google_oauth_state", state, {
+    ...cookieBase,
+    maxAge: accessTokenDuration * 1000, // 15 minutes in milliseconds
+  });
+}
+
+export async function googleLoginHandler(_req: Request, res: Response) {
+  try {
+    const client = getGoogleClient();
+    const state = crypto.randomBytes(32).toString("hex");
+    setGoogleOAuthStateCookie(res, state);
+    const url = client.generateAuthUrl({
+      access_type: "offline",
+      scope: ["openid", "profile", "email"],
+      prompt: "consent",
+      state, // for CSRF protection
+    });
+    return res.redirect(url);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : error;
+    console.error("Google login initiation failed:", errorMessage);
+    return res.status(500).json({ error: "Failed to initiate Google login." });
+  }
+}
+
+export async function googleCallbackHandler(req: Request, res: Response) {
+  const code = req.query.code as string | undefined;
+  const state = req.query.state;
+  const stateFromCookie = req.cookies?.google_oauth_state;
+  if (!code) return res.status(400).json({ error: "Code not found" });
+  if (!state || !stateFromCookie || state !== stateFromCookie) {
+    clearGoogleOAuthStateCookie(req, res);
+    return res.status(400).json({ error: "Invalid OAuth state" });
+  }
+  try {
+    clearGoogleOAuthStateCookie(req, res);
+    const client = getGoogleClient();
+    const { tokens } = await client.getToken(code);
+    if (!tokens?.id_token)
+      return res.status(400).json({ error: "Google ID token not found" });
+    // verify token and read the user info from it
+    const ticket = await client.verifyIdToken({
+      idToken: tokens.id_token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    if (!payload) {
+      return res.status(400).json({ error: "Invalid Google token payload" });
+    }
+    const email = payload?.email;
+    const emailVerified = payload?.email_verified;
+    if (!email || !emailVerified)
+      return res.status(400).json({ error: "Email not verified" });
+    let user = await prisma.user.findUnique({
+      where: { email },
+    });
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          name: payload?.name || "User",
+          email,
+          passwordHash: null,
+          //picture: payload?.picture,
+          emailVerified: new Date(),
+        },
+      });
+    } else {
+      if (!user.emailVerified) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            emailVerified: new Date(),
+            emailVerificationToken: null,
+            emailVerificationExpires: null,
+          },
+        });
+      }
+    }
+    createToken("access", res, {
+      sub: user.id,
+      role: user.role,
+      tokenVersion: user.tokenVersion,
+    });
+    const redirectUrl = `${baseUrl}/${process.env.REDIRECT_AFTER_LOGIN_URL || ""}`;
+    return res.redirect(redirectUrl);
+  } catch (error) {
+    console.log("Login with google error:", error);
+    return res.status(500).json({ message: `Internal server error` });
   }
 }

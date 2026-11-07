@@ -21,7 +21,8 @@ app.use(cookieParser());
 app.use('/auth', authRouter);
 // user routes
 app.use('/users', userRouter);
-app.use("/", googleConnectionRouter);
+// This route is used to initiate the OAuth2 flow for connecting to Gmail and obtaining an access token.
+app.use("/auth", googleConnectionRouter);
 
 function showRoles(...roles: Role[]) {
   return roles;   // an array
