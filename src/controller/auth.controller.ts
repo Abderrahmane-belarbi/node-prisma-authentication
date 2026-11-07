@@ -27,10 +27,11 @@ const baseUrl =
   process.env.NODE_ENV === "development"
     ? requireEnv("APP_PRIVATE_URL")
     : requireEnv("APP_PUBLIC_URL");
+const verificationExpiresInMinutes =
+  Number(process.env.EMAIL_VERIFICATION_EXPIRES) || 10;
+const emailVerificationCooldown = Number(process.env.EMAIL_VERIFICATION_COOLDOWN) || 60;
 //________________________________________________________________________________________
 export async function registerHandler(req: Request, res: Response) {
-  const expiresInMinutes = Number(process.env.EMAIL_VERIFICATION_EXPIRES) || 10;
-
   const validation = UserRegisterSchema.safeParse(req.body);
   if (!validation.success) {
     const fieldErrors = toFieldsErrors(validation.error);
@@ -63,7 +64,7 @@ export async function registerHandler(req: Request, res: Response) {
         passwordHash: hashedPassword,
         emailVerificationToken: tokenHash,
         emailVerificationExpires: new Date(
-          Date.now() + expiresInMinutes * 60 * 1000,
+          Date.now() + verificationExpiresInMinutes * 60 * 1000,
         ),
       },
     });
@@ -78,14 +79,14 @@ export async function registerHandler(req: Request, res: Response) {
           "Confirm your email address using this link:",
           verificationUrl.toString(),
           "",
-          `This link expires in ${expiresInMinutes} minutes.`,
+          `This link expires in ${verificationExpiresInMinutes} minutes.`,
           "",
           "If you did not create an account, you can ignore this email.",
         ].join("\n"),
         html: verificationEmailTemplate(
           appName,
           verificationUrl,
-          expiresInMinutes,
+          verificationExpiresInMinutes,
         ),
       });
     } catch (error) {
@@ -459,5 +460,113 @@ export async function resetPasswordHandler(req: Request, res: Response) {
   } catch (error) {
     console.error("Reset password error:", error);
     return res.status(500).json({ message: "Internal server error" });
+  }
+}
+
+export async function resendVerificationEmailHandler(
+  req: Request,
+  res: Response,
+) {
+  // Reuse the same email validation used during registration.
+  const emailValidation = UserRegisterSchema.shape.email.safeParse(req.body?.email);
+  if (!emailValidation.success) {
+    return res.status(400).json({
+      message: "Please provide a valid email address.",
+    });
+  }
+  const email = emailValidation.data;
+  // Same response for unknown, verified, and cooldown-limited accounts.
+  const response = {
+    message:
+      "If your account needs verification, a verification email will be sent. " +
+      "Please wait at least 60 seconds before requesting another.",
+  };
+  try {
+    if (!baseUrl) {
+      throw new Error("Application URL is not configured.");
+    }
+
+    const rawToken = crypto.randomBytes(32).toString("hex");
+
+    const tokenHash = crypto
+      .createHash("sha256")
+      .update(rawToken)
+      .digest("hex");
+
+    const verificationUrl = new URL("/auth/verify-email", baseUrl);
+    verificationUrl.searchParams.set("token", rawToken);
+
+    const now = new Date();
+    const nextAllowedAt = new Date(now.getTime() + emailVerificationCooldown * 1000); // 60 seconds cooldown
+
+    // Check eligibility and save the new token in one database operation.
+    // Concurrent requests cannot both pass the cooldown.
+    const result = await prisma.user.updateMany({
+      where: {
+        email,
+        emailVerified: null,
+        OR: [
+          { emailVerificationResendAvailableAt: null },
+          {
+            emailVerificationResendAvailableAt: {
+              gte: nextAllowedAt,
+            },
+          },
+        ],
+      },
+      data: {
+        emailVerificationToken: tokenHash,
+        emailVerificationExpires: new Date(
+          now.getTime() + verificationExpiresInMinutes * 60_000,
+        ),
+        emailVerificationResendAvailableAt: now,
+      },
+    });
+    if (result.count !== 1) {
+      return res.status(200).json(response);
+    }
+    try {
+      await sendMail({
+        to: email,
+        subject: `Verify your email for ${appName}`,
+        text: [
+          `Thanks for signing up for ${appName}!`,
+          "",
+          "Confirm your email address using this link:",
+          verificationUrl.toString(),
+          "",
+          `This link expires in ${verificationExpiresInMinutes} minutes.`,
+          "",
+          "If you did not create an account, you can ignore this email.",
+        ].join("\n"),
+        html: verificationEmailTemplate(
+          appName,
+          verificationUrl,
+          verificationExpiresInMinutes,
+        ),
+      });
+    } catch {
+      // Avoid logging mail errors that might contain credentials.
+      console.error("Failed to send verification email.");
+      // Remove only this request's token, not a newer replacement.
+      // Keep the cooldown timestamp to prevent repeated failed sends.
+      await prisma.user.updateMany({
+        where: {
+          email,
+          emailVerified: null,
+          emailVerificationToken: tokenHash,
+        },
+        data: {
+          emailVerificationToken: null,
+          emailVerificationExpires: null,
+        },
+      });
+    }
+    return res.status(200).json(response);
+  } catch {
+    console.error("Resend verification request failed.");
+    return res.status(500).json({
+      message: "Unable to process your request. Please try again later.",
+    });
   }
 }

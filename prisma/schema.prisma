@@ -28,6 +28,7 @@ model User {
   tokenVersion Int @default(0)
   emailVerificationToken String? @unique
   emailVerificationExpires DateTime?
+  emailVerificationResendAvailableAt DateTime?
   resetPasswordToken String? @unique
   resetPasswordExpires DateTime?
 
