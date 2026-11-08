@@ -470,7 +470,6 @@ export async function resendVerificationEmailHandler(
   req: Request,
   res: Response,
 ) {
-  // Reuse the same email validation used during registration.
   const emailValidation = UserRegisterSchema.shape.email.safeParse(
     req.body?.email,
   );
@@ -480,19 +479,55 @@ export async function resendVerificationEmailHandler(
     });
   }
   const email = emailValidation.data;
-  // Same response for unknown, verified, and cooldown-limited accounts.
-  const response = {
-    message:
-      "If your account needs verification, a verification email will be sent. " +
-      "Please wait at least 60 seconds before requesting another.",
-  };
   try {
     if (!baseUrl) {
       throw new Error("Application URL is not configured.");
     }
+    if (
+      !Number.isFinite(emailVerificationCooldown) ||
+      emailVerificationCooldown <= 0 ||
+      !Number.isFinite(verificationExpiresInMinutes) ||
+      verificationExpiresInMinutes <= 0
+    ) {
+      throw new Error("Invalid email verification configuration.");
+    }
+    const user = await prisma.user.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        emailVerified: true,
+        emailVerificationResendAvailableAt: true,
+      },
+    });
+    if (!user) {
+      return res.status(400).json({
+        message: "Invalid email address.",
+      });
+    }
+    if (user.emailVerified !== null) {
+      return res.status(400).json({
+        message: "Your email is already verified. You can log in.",
+      });
+    }
+    const now = new Date();
+    if (
+      user.emailVerificationResendAvailableAt &&
+      user.emailVerificationResendAvailableAt.getTime() > now.getTime()
+    ) {
+      const retryAfterSeconds = Math.ceil(
+        (user.emailVerificationResendAvailableAt.getTime() - now.getTime()) /
+          1000,
+      );
+      res.setHeader("Retry-After", String(retryAfterSeconds));
 
+      return res.status(429).json({
+        message:
+          `Please wait ${retryAfterSeconds} seconds before requesting ` +
+          "another verification email.",
+        retryAfterSeconds,
+      });
+    }
     const rawToken = crypto.randomBytes(32).toString("hex");
-
     const tokenHash = crypto
       .createHash("sha256")
       .update(rawToken)
@@ -500,23 +535,21 @@ export async function resendVerificationEmailHandler(
 
     const verificationUrl = new URL("/auth/verify-email", baseUrl);
     verificationUrl.searchParams.set("token", rawToken);
-
-    const now = new Date();
     const nextAllowedAt = new Date(
       now.getTime() + emailVerificationCooldown * 1000,
-    ); // 60 seconds cooldown
-
-    // Check eligibility and save the new token in one database operation.
-    // Concurrent requests cannot both pass the cooldown.
+    );
+    // Recheck eligibility while saving the token.
+    // A competing request may have changed the account after our read.
     const result = await prisma.user.updateMany({
       where: {
+        id: user.id,
         email,
         emailVerified: null,
         OR: [
           { emailVerificationResendAvailableAt: null },
           {
             emailVerificationResendAvailableAt: {
-              gte: nextAllowedAt,
+              lte: now,
             },
           },
         ],
@@ -526,11 +559,16 @@ export async function resendVerificationEmailHandler(
         emailVerificationExpires: new Date(
           now.getTime() + verificationExpiresInMinutes * 60_000,
         ),
-        emailVerificationResendAvailableAt: now,
+        emailVerificationResendAvailableAt: nextAllowedAt,
       },
     });
+
     if (result.count !== 1) {
-      return res.status(200).json(response);
+      return res.status(409).json({
+        message:
+          "Your account status changed or another verification request " +
+          "was processed. Please try again later.",
+      });
     }
     try {
       await sendMail({
@@ -552,14 +590,13 @@ export async function resendVerificationEmailHandler(
           verificationExpiresInMinutes,
         ),
       });
-    } catch {
-      // Avoid logging mail errors that might contain credentials.
-      console.error("Failed to send verification email.");
-      // Remove only this request's token, not a newer replacement.
-      // Keep the cooldown timestamp to prevent repeated failed sends.
+    } catch (error) {
+      console.error("Failed to send verification email.", error);
+      // Remove only this request's token.
+      // Preserve a newer token and keep the cooldown deadline.
       await prisma.user.updateMany({
         where: {
-          email,
+          id: user.id,
           emailVerified: null,
           emailVerificationToken: tokenHash,
         },
@@ -568,10 +605,19 @@ export async function resendVerificationEmailHandler(
           emailVerificationExpires: null,
         },
       });
+
+      return res.status(503).json({
+        message:
+          "We could not send the verification email. " +
+          "Please try again after the cooldown.",
+      });
     }
-    return res.status(200).json(response);
-  } catch {
-    console.error("Resend verification request failed.");
+    return res.status(200).json({
+      message: "Verification email sent.",
+    });
+  } catch (error) {
+    console.error("Resend verification request failed.", error);
+
     return res.status(500).json({
       message: "Unable to process your request. Please try again later.",
     });
