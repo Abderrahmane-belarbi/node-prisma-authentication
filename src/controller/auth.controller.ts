@@ -639,9 +639,7 @@ export function getGoogleClient() {
 
 function clearGoogleOAuthStateCookie(_req: Request, res: Response) {
   res.clearCookie("google_oauth_state", {
-    httpOnly: true,
-    secure: process.env.MODE !== "development",
-    sameSite: "lax",
+    ...cookieBase,
   });
 }
 
@@ -672,67 +670,174 @@ export async function googleLoginHandler(_req: Request, res: Response) {
 }
 
 export async function googleCallbackHandler(req: Request, res: Response) {
-  const code = req.query.code as string | undefined;
+  const code = req.query.code;
   const state = req.query.state;
-  const stateFromCookie = req.cookies?.google_oauth_state;
-  if (!code) return res.status(400).json({ error: "Code not found" });
-  if (!state || !stateFromCookie || state !== stateFromCookie) {
+  const stateFromCookie: unknown = req.cookies?.google_oauth_state;
+
+  // Confirm this callback belongs to the login started by this browser.
+  if (
+    typeof state !== "string" ||
+    !state ||
+    typeof stateFromCookie !== "string" ||
+    !stateFromCookie ||
+    state !== stateFromCookie
+  ) {
     clearGoogleOAuthStateCookie(req, res);
-    return res.status(400).json({ error: "Invalid OAuth state" });
+
+    return res.status(400).json({
+      message: "Invalid or expired Google login request. Please try again.",
+    });
   }
+
+  clearGoogleOAuthStateCookie(req, res);
+
+  if (req.query.error !== undefined) {
+    return res.status(400).json({
+      message: "Google authorization was denied or failed.",
+    });
+  }
+
+  if (typeof code !== "string" || !code) {
+    return res.status(400).json({
+      message: "No valid authorization code returned from Google.",
+    });
+  }
+
   try {
-    clearGoogleOAuthStateCookie(req, res);
+    if (!baseUrl) {
+      throw new Error("Application URL is not configured.");
+    }
+
+    const frontendUrl = new URL(baseUrl);
+
+    const redirectUrl = new URL(
+      process.env.REDIRECT_AFTER_LOGIN_URL || "/",
+      frontendUrl,
+    );
+
+    // Keep the redirect on your configured frontend.
+    if (
+      !["http:", "https:"].includes(frontendUrl.protocol) ||
+      redirectUrl.origin !== frontendUrl.origin
+    ) {
+      throw new Error("Invalid post-login redirect configuration.");
+    }
+
     const client = getGoogleClient();
+
+    // Exchange Google's authorization code for tokens.
     const { tokens } = await client.getToken(code);
-    if (!tokens?.id_token)
-      return res.status(400).json({ error: "Google ID token not found" });
-    // verify token and read the user info from it
+
+    if (!tokens.id_token) {
+      return res.status(400).json({
+        message: "Google did not return an ID token.",
+      });
+    }
+
+    // Verify the token before trusting its contents.
     const ticket = await client.verifyIdToken({
       idToken: tokens.id_token,
-      audience: process.env.GOOGLE_CLIENT_ID,
+      audience: requireEnv("GOOGLE_CLIENT_ID"),
     });
+
     const payload = ticket.getPayload();
-    if (!payload) {
-      return res.status(400).json({ error: "Invalid Google token payload" });
-    }
-    const email = payload?.email;
-    const emailVerified = payload?.email_verified;
-    if (!email || !emailVerified)
-      return res.status(400).json({ error: "Email not verified" });
-    let user = await prisma.user.findUnique({
-      where: { email },
-    });
-    if (!user) {
-      user = await prisma.user.create({
-        data: {
-          name: payload?.name || "User",
-          email,
-          passwordHash: null,
-          //picture: payload?.picture,
-          emailVerified: new Date(),
-        },
+
+    if (
+      !payload?.sub ||
+      !payload.email ||
+      payload.email_verified !== true
+    ) {
+      return res.status(400).json({
+        message: "Google did not provide a verified email address.",
       });
-    } else {
-      if (!user.emailVerified) {
-        await prisma.user.update({
-          where: { id: user.id },
-          data: {
-            emailVerified: new Date(),
-            emailVerificationToken: null,
-            emailVerificationExpires: null,
-          },
+    }
+
+    const googleId = payload.sub;
+    const email = payload.email.trim().toLowerCase();
+
+    // Look up the Google identity and its associated application user.
+    const account = await prisma.account.findUnique({
+      where: {
+        provider_providerAccountId: {
+          provider: "GOOGLE",
+          providerAccountId: googleId,
+        },
+      },
+      include: {
+        user: true,
+      },
+    });
+
+    let user = account?.user;
+
+    if (!user) {
+      const existingUser = await prisma.user.findUnique({
+        where: { email },
+        select: { id: true },
+      });
+
+      // Matching emails alone do not automatically link accounts.
+      if (existingUser) {
+        return res.status(409).json({
+          message:
+            "An account with this email already exists. " +
+            "Sign in using your existing method before linking Google.",
         });
       }
+
+      // Nested creation saves the user and linked account together.
+      user = await prisma.user.create({
+        data: {
+          name: payload.name?.trim() || "Google User",
+          email,
+          passwordHash: null,
+          emailVerified: new Date(),
+          accounts: {
+            create: {
+              provider: "GOOGLE",
+              providerAccountId: googleId,
+            },
+          },
+        },
+      });
     }
-    createToken("access", res, {
+
+    // Do not bypass your application's two-factor authentication.
+    if (user.twoFactorEnable) {
+      return res.status(403).json({
+        message:
+          "Two-factor authentication is required. " +
+          "Google login for accounts with 2FA is not implemented yet.",
+      });
+    }
+
+    const sessionPayload = {
       sub: user.id,
       role: user.role,
       tokenVersion: user.tokenVersion,
+    };
+
+    // Create YOUR application's refresh token.
+    const refreshToken = signToken("refresh", sessionPayload);
+
+    // Store its hash before sending authentication cookies.
+    await prisma.refreshToken.create({
+      data: {
+        tokenHash: hashRefreshToken(refreshToken),
+        userId: user.id,
+        expiresAt: getRefreshTokenExpiry(),
+      },
     });
-    const redirectUrl = `${baseUrl}/${process.env.REDIRECT_AFTER_LOGIN_URL || ""}`;
-    return res.redirect(redirectUrl);
-  } catch (error) {
-    console.log("Login with google error:", error);
-    return res.status(500).json({ message: `Internal server error` });
+
+    createToken("access", res, sessionPayload);
+    setTokenCookie("refresh", res, refreshToken);
+
+    return res.redirect(redirectUrl.toString());
+  } catch {
+    console.error("Google login failed.");
+
+    return res.status(500).json({
+      message: "Unable to complete Google login. Please try again.",
+    });
   }
 }

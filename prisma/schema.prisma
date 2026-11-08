@@ -33,7 +33,7 @@ model User {
   resetPasswordExpires DateTime?
 
   refreshTokens RefreshToken[]
-
+  accounts Account[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -49,4 +49,21 @@ model RefreshToken {
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+enum AuthProvider {
+  GOOGLE
+  GITHUB
+}
+
+model Account {
+  id                String       @id @default(cuid())
+  userId            String
+  provider          AuthProvider
+  providerAccountId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  
+  @@unique([provider, providerAccountId])
+  @@index([userId])
 }
