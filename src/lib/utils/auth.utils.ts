@@ -70,7 +70,7 @@ export function getRefreshTokenExpiry() {
   return new Date(Date.now() + TOKEN_CONFIG.refresh.duration * 1000);
 }
 
-export function hashRefreshToken(token: string) {
+export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 

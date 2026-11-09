@@ -10,7 +10,7 @@ import {
   cookieBase,
   createToken,
   getRefreshTokenExpiry,
-  hashRefreshToken,
+  hashToken,
   setTokenCookie,
   signToken,
   verifyToken,
@@ -57,10 +57,7 @@ export async function registerHandler(req: Request, res: Response) {
     const verificationUrl = new URL("/auth/verify-email", baseUrl);
     const rawToken = crypto.randomBytes(32).toString("hex");
     verificationUrl.searchParams.set("token", rawToken);
-    const tokenHash = crypto
-      .createHash("sha256")
-      .update(rawToken)
-      .digest("hex");
+    const tokenHash = hashToken(rawToken);
     const user = await prisma.user.create({
       data: {
         name,
@@ -151,7 +148,7 @@ export async function loginHandler(req: Request, res: Response) {
     const refreshToken = signToken("refresh", payload);
     await prisma.refreshToken.create({
       data: {
-        tokenHash: hashRefreshToken(refreshToken),
+        tokenHash: hashToken(refreshToken),
         userId: user.id,
         expiresAt: getRefreshTokenExpiry(),
       },
@@ -169,7 +166,7 @@ export async function refreshTokenHandler(req: Request, res: Response) {
   if (!token) return res.status(401).json({ message: "Unauthorized" });
   try {
     const payload = verifyToken("refresh", token);
-    const tokenHash = hashRefreshToken(token);
+    const tokenHash = hashToken(token);
     const storedToken = await prisma.refreshToken.findUnique({
       where: { tokenHash },
     });
@@ -206,7 +203,7 @@ export async function refreshTokenHandler(req: Request, res: Response) {
       if (revoked.count !== 1) return false;
       await tx.refreshToken.create({
         data: {
-          tokenHash: hashRefreshToken(newRefreshToken),
+          tokenHash: hashToken(newRefreshToken),
           userId: user.id,
           expiresAt: getRefreshTokenExpiry(),
         },
@@ -240,7 +237,7 @@ export async function logoutHandler(req: Request, res: Response) {
   if (typeof token === "string" && token.length > 0) {
     try {
       await prisma.refreshToken.updateMany({
-        where: { tokenHash: hashRefreshToken(token), revokedAt: null },
+        where: { tokenHash: hashToken(token), revokedAt: null },
         data: { revokedAt: new Date() },
       });
     } catch {
@@ -261,7 +258,7 @@ export async function verifyEmailHandler(req: Request, res: Response) {
     return res.status(400).json({ message: "Invalid verification token." });
 
   try {
-    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const tokenHash = hashToken(token);
     const user = await prisma.user.findUnique({
       where: {
         emailVerificationToken: tokenHash,
@@ -327,10 +324,7 @@ export async function forgetPassword(req: Request, res: Response) {
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) return res.status(400).json({ message: "Invalid email" });
     const rawToken = crypto.randomBytes(32).toString("hex");
-    const tokenHash = crypto
-      .createHash("sha256")
-      .update(rawToken)
-      .digest("hex");
+    const tokenHash = hashToken(rawToken);
     const duration = expiresInMinutes * 60 * 1000;
     const resetPasswordExpires = new Date(Date.now() + duration);
     user.resetPasswordToken = tokenHash;
@@ -399,7 +393,7 @@ export async function resetPasswordHandler(req: Request, res: Response) {
     return res.status(400).json({ message: "Invalid password format" });
   }
   try {
-    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const tokenHash = hashToken(token);
     const user = await prisma.user.findUnique({
       where: {
         resetPasswordToken: tokenHash,
@@ -528,10 +522,7 @@ export async function resendVerificationEmailHandler(
       });
     }
     const rawToken = crypto.randomBytes(32).toString("hex");
-    const tokenHash = crypto
-      .createHash("sha256")
-      .update(rawToken)
-      .digest("hex");
+    const tokenHash = hashToken(rawToken);
 
     const verificationUrl = new URL("/auth/verify-email", baseUrl);
     verificationUrl.searchParams.set("token", rawToken);
@@ -823,7 +814,7 @@ export async function googleCallbackHandler(req: Request, res: Response) {
     // Store its hash before sending authentication cookies.
     await prisma.refreshToken.create({
       data: {
-        tokenHash: hashRefreshToken(refreshToken),
+        tokenHash: hashToken(refreshToken),
         userId: user.id,
         expiresAt: getRefreshTokenExpiry(),
       },
