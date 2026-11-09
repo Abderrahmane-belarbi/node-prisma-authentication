@@ -616,16 +616,14 @@ export async function resendVerificationEmailHandler(
 }
 
 export function getGoogleClient() {
-  const clientId = requireEnv("GOOGLE_CLIENT_ID");
-  const clientSecret = requireEnv("GOOGLE_CLIENT_SECRET");
-  const redirectUri =
-    process.env.NODE_ENV === "development"
-      ? requireEnv("LOCAL_GOOGLE_REDIRECT_URI")
-      : requireEnv("PUBLIC_GOOGLE_REDIRECT_URI");
-  if (!clientId || !clientSecret || !redirectUri) {
-    throw new Error("Google OAuth configuration is missing.");
-  }
-  return new OAuth2Client({ clientId, clientSecret, redirectUri });
+  return new OAuth2Client({
+    client_id: requireEnv("GOOGLE_CLIENT_ID"),
+    client_secret: requireEnv("GOOGLE_CLIENT_SECRET"),
+    redirectUri:
+      process.env.NODE_ENV === "development"
+        ? requireEnv("LOCAL_GOOGLE_REDIRECT_URI")
+        : requireEnv("PUBLIC_GOOGLE_REDIRECT_URI"),
+  });
 }
 
 function clearGoogleOAuthStateCookie(_req: Request, res: Response) {
@@ -733,11 +731,7 @@ export async function googleCallbackHandler(req: Request, res: Response) {
 
     const payload = ticket.getPayload();
 
-    if (
-      !payload?.sub ||
-      !payload.email ||
-      payload.email_verified !== true
-    ) {
+    if (!payload?.sub || !payload.email || payload.email_verified !== true) {
       return res.status(400).json({
         message: "Google did not provide a verified email address.",
       });
@@ -824,9 +818,11 @@ export async function googleCallbackHandler(req: Request, res: Response) {
     setTokenCookie("refresh", res, refreshToken);
 
     return res.redirect(redirectUrl.toString());
-  } catch {
-    console.error("Google login failed.");
-
+  } catch (error) {
+    console.error(
+      "Google login failed.",
+      error instanceof Error ? error.message : error,
+    );
     return res.status(500).json({
       message: "Unable to complete Google login. Please try again.",
     });
