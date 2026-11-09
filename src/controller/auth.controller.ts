@@ -775,6 +775,7 @@ export async function googleCallbackHandler(req: Request, res: Response) {
         data: {
           name: payload.name?.trim() || "Google User",
           email,
+          picture: payload.picture?.trim() || null,
           passwordHash: null,
           emailVerified: new Date(),
           accounts: {
